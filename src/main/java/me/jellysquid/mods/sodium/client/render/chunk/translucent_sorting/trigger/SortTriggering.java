@@ -27,12 +27,12 @@ import net.minecraft.util.math.ChunkSectionPos;
  * @author douira (the translucent_sorting package)
  */
 public class SortTriggering {
-    public static boolean DEBUG_ONLY_TOPO_OR_DISTANCE_SORT = false;
-    public static boolean DEBUG_SKIP_TOPO_SORT = false;
-    public static boolean DEBUG_COMPRESSION_STATS = false;
-    public static boolean DEBUG_TRIGGER_STATS = false;
-    public static boolean DEBUG_DISABLE_FRUSTUM_CULLING = false;
-    public static boolean DEBUG_ONLY_RENDER_CURRENT_SECTION = false;
+    public static final boolean DEBUG_ONLY_TOPO_OR_DISTANCE_SORT = false;
+    public static final boolean DEBUG_SKIP_TOPO_SORT = false;
+    public static final boolean DEBUG_COMPRESSION_STATS = false;
+    public static final boolean DEBUG_TRIGGER_STATS = false;
+    public static final boolean DEBUG_DISABLE_FRUSTUM_CULLING = false;
+    public static final boolean DEBUG_ONLY_RENDER_CURRENT_SECTION = false;
 
     /**
      * To avoid generating a collection of the triggered sections, this callback is
