@@ -6,6 +6,8 @@ import java.util.function.BiConsumer;
 import org.joml.Vector3dc;
 
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
+import me.jellysquid.mods.sodium.client.SodiumClientMod;
+import me.jellysquid.mods.sodium.client.gui.SodiumGameOptions.SortBehavior;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.AlignableNormal;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.SortType;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.data.DynamicData;
@@ -14,18 +16,17 @@ import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.data.Tr
 import net.minecraft.util.math.ChunkSectionPos;
 
 /**
- * This class is the central point in translucency sorting. It counts the number
+ * This class is a central point in translucency sorting. It counts the number
  * of translucent data objects for each sort type and delegates triggering of
  * sections for dynamic sorting to the trigger components.
  * 
- * TODO:
- * - Incompatible with rendering anything through Indium because it doesn't run
- * the translucent geometry collector properly. It doesn't run Sodium's
- * BlockRenderer which is required for lines 166-167 of BlockRenderer to work.
+ * TODO: see if the duplicated geometry bug happens when:
+ * - hashing for triggering is removed
+ * - hashing for translucent data reuse is removed
  * 
  * @author douira (the translucent_sorting package)
  */
-public class TranslucentSorting {
+public class SortTriggering {
     public static boolean DEBUG_ONLY_TOPO_OR_DISTANCE_SORT = false;
     public static boolean DEBUG_SKIP_TOPO_SORT = false;
     public static boolean DEBUG_COMPRESSION_STATS = false;
@@ -59,7 +60,7 @@ public class TranslucentSorting {
     private final DirectTriggers direct = new DirectTriggers();
 
     interface SectionTriggers<T extends DynamicData> {
-        void processTriggers(TranslucentSorting ts, CameraMovement movement);
+        void processTriggers(SortTriggering ts, CameraMovement movement);
 
         void removeSection(long sectionPos, TranslucentData data);
 
@@ -194,16 +195,22 @@ public class TranslucentSorting {
     }
 
     public void addDebugStrings(List<String> list) {
-        list.add(String.format("TS NL=%02d TrN=%02d TrS=G%03d/D%03d",
-                this.gfni.getUniqueNormalCount(),
-                this.triggeredNormalCount,
-                this.gfniTriggerCount,
-                this.directTriggerCount));
-        list.add(String.format("N=%05d SNR=%05d STA=%04d DYN=%04d (DIR=%04d)",
-                this.sortTypeCounters[SortType.NONE.ordinal()],
-                this.sortTypeCounters[SortType.STATIC_NORMAL_RELATIVE.ordinal()],
-                this.sortTypeCounters[SortType.STATIC_TOPO_ACYCLIC.ordinal()],
-                this.sortTypeCounters[SortType.DYNAMIC_ALL.ordinal()],
-                this.direct.getDirectTriggerCount()));
+        var sortBehavior = SodiumClientMod.options().performance.sortBehavior;
+        if (sortBehavior == SortBehavior.OFF) {
+            list.add("TS OFF");
+        } else {
+            list.add("TS (%s) NL=%02d TrN=%02d TrS=G%03d/D%03d".formatted(
+                    sortBehavior.getShortName(),
+                    this.gfni.getUniqueNormalCount(),
+                    this.triggeredNormalCount,
+                    this.gfniTriggerCount,
+                    this.directTriggerCount));
+            list.add("N=%05d SNR=%05d STA=%04d DYN=%04d (DIR=%04d)".formatted(
+                    this.sortTypeCounters[SortType.NONE.ordinal()],
+                    this.sortTypeCounters[SortType.STATIC_NORMAL_RELATIVE.ordinal()],
+                    this.sortTypeCounters[SortType.STATIC_TOPO.ordinal()],
+                    this.sortTypeCounters[SortType.DYNAMIC.ordinal()],
+                    this.direct.getDirectTriggerCount()));
+        }
     }
 }

@@ -11,6 +11,7 @@ import it.unimi.dsi.fastutil.objects.ReferenceSets;
 import me.jellysquid.mods.sodium.client.SodiumClientMod;
 import me.jellysquid.mods.sodium.client.gl.device.CommandList;
 import me.jellysquid.mods.sodium.client.gl.device.RenderDevice;
+import me.jellysquid.mods.sodium.client.gui.SodiumGameOptions.DeferSortMode;
 import me.jellysquid.mods.sodium.client.render.chunk.compile.BuilderTaskOutput;
 import me.jellysquid.mods.sodium.client.render.chunk.compile.ChunkBuildOutput;
 import me.jellysquid.mods.sodium.client.render.chunk.compile.ChunkSortOutput;
@@ -34,7 +35,7 @@ import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.data.No
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.data.TopoSortDynamicData;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.data.TranslucentData;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.trigger.CameraMovement;
-import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.trigger.TranslucentSorting;
+import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.trigger.SortTriggering;
 import me.jellysquid.mods.sodium.client.render.chunk.vertex.format.ChunkMeshFormats;
 import me.jellysquid.mods.sodium.client.render.texture.SpriteUtil;
 import me.jellysquid.mods.sodium.client.render.util.RenderAsserts;
@@ -81,7 +82,9 @@ public class RenderSectionManager {
 
     private final int renderDistance;
 
-    private final TranslucentSorting ts;
+    private final SortTriggering ts;
+
+    private ChunkJobCollector lastBlockingCollector;
 
     @NotNull
     private SortedRenderLists renderLists;
@@ -100,12 +103,13 @@ public class RenderSectionManager {
         this.chunkRenderer = new DefaultChunkRenderer(RenderDevice.INSTANCE, ChunkMeshFormats.COMPACT);
 
         this.world = world;
-        this.ts = new TranslucentSorting();
 
         this.builder = new ChunkBuilder(world, ChunkMeshFormats.COMPACT);
 
         this.needsGraphUpdate = true;
         this.renderDistance = renderDistance;
+
+        this.ts = new SortTriggering();
 
         this.regions = new RenderRegionManager(commandList);
         this.sectionCache = new ClonedChunkSectionCache(this.world);
@@ -288,23 +292,6 @@ public class RenderSectionManager {
         return render.getLastVisibleFrame() == this.lastUpdatedFrame;
     }
 
-    public void updateChunks(boolean updateImmediately) {
-        this.sectionCache.cleanup();
-        this.regions.update();
-
-        var blockingCollector = new ChunkJobCollector(Integer.MAX_VALUE, this.buildResults::add);
-        var deferredCollector = new ChunkJobCollector(this.builder.getSchedulingBudget(), this.buildResults::add);
-        var maybeBlockingCollector = updateImmediately ? blockingCollector : deferredCollector;
-
-        this.submitSectionTasks(blockingCollector, ChunkUpdateType.IMPORTANT_REBUILD);
-        this.submitSectionTasks(blockingCollector, ChunkUpdateType.IMPORTANT_SORT);
-        this.submitSectionTasks(maybeBlockingCollector, ChunkUpdateType.REBUILD);
-        this.submitSectionTasks(maybeBlockingCollector, ChunkUpdateType.INITIAL_BUILD);
-        this.submitSectionTasks(maybeBlockingCollector, ChunkUpdateType.SORT);
-
-        blockingCollector.awaitCompletion(this.builder);
-    }
-
     public void uploadChunks() {
         var results = this.collectChunkBuildResults();
 
@@ -346,6 +333,8 @@ public class RenderSectionManager {
 
             var job = result.render.getTaskCancellationToken();
 
+            // clear the cancellation token (thereby marking the section as not having an
+            // active task) if this job is the most recent submitted job for this section
             if (job != null && result.submitTime >= result.render.getLastSubmittedFrame()) {
                 result.render.setTaskCancellationToken(null);
             }
@@ -400,6 +389,56 @@ public class RenderSectionManager {
         return results;
     }
 
+    public void cleanupAndFlip() {
+        this.sectionCache.cleanup();
+        this.regions.update();
+    }
+
+    public void updateChunks(boolean updateImmediately) {
+        var thisFrameBlockingCollector = this.lastBlockingCollector;
+        if (thisFrameBlockingCollector == null) {
+            thisFrameBlockingCollector = new ChunkJobCollector(Integer.MAX_VALUE, this.buildResults::add);
+        }
+
+        if (updateImmediately) {
+            // for a perfect frame where everything is finished use the last frame's blocking collector
+            // and add all tasks to it so that they're waited on
+            this.submitSectionTasks(thisFrameBlockingCollector, thisFrameBlockingCollector, thisFrameBlockingCollector);
+
+            thisFrameBlockingCollector.awaitCompletion(this.builder);
+            this.lastBlockingCollector = null;
+        } else {
+            var nextFrameBlockingCollector = new ChunkJobCollector(Integer.MAX_VALUE, this.buildResults::add);
+            var deferredCollector = new ChunkJobCollector(this.builder.getSchedulingBudget(), this.buildResults::add);
+
+            // if zero frame delay is allowed, submit important sorts with the current frame blocking collector.
+            // otherwise submit with the collector that the next frame is blocking on.
+            if (allowZeroFrameSortWait()) {
+                this.submitSectionTasks(thisFrameBlockingCollector, nextFrameBlockingCollector, deferredCollector);
+            } else {
+                this.submitSectionTasks(nextFrameBlockingCollector, nextFrameBlockingCollector, deferredCollector);
+            }
+
+            // wait on this frame's blocking collector which contains the important tasks from this frame
+            // and semi-important tasks from the last frame
+            thisFrameBlockingCollector.awaitCompletion(this.builder);
+
+            // store the semi-important collector to wait on it in the next frame
+            this.lastBlockingCollector = nextFrameBlockingCollector;
+        }
+    }
+
+    private void submitSectionTasks(
+        ChunkJobCollector importantCollector,
+        ChunkJobCollector semiImportantCollector,
+        ChunkJobCollector deferredCollector) {
+            this.submitSectionTasks(importantCollector, ChunkUpdateType.IMPORTANT_SORT);
+            this.submitSectionTasks(semiImportantCollector, ChunkUpdateType.IMPORTANT_REBUILD);
+            this.submitSectionTasks(deferredCollector, ChunkUpdateType.REBUILD);
+            this.submitSectionTasks(deferredCollector, ChunkUpdateType.INITIAL_BUILD);
+            this.submitSectionTasks(deferredCollector, ChunkUpdateType.SORT);
+    }
+
     private void submitSectionTasks(ChunkJobCollector collector, ChunkUpdateType type) {
         var queue = this.taskLists.get(type);
 
@@ -407,6 +446,12 @@ public class RenderSectionManager {
             RenderSection section = queue.remove();
 
             if (section.isDisposed()) {
+                continue;
+            }
+
+            // stop if the section is in this list but doesn't have this update type
+            var pendingUpdate = section.getPendingUpdate();
+            if (pendingUpdate != null && pendingUpdate != type) {
                 continue;
             }
 
@@ -509,13 +554,11 @@ public class RenderSectionManager {
     }
 
     public void scheduleSort(long sectionPos, boolean isDirectTrigger) {
-        // TODO: Does this need to invalidate the section cache?
-
         RenderSection section = this.sectionByPosition.get(sectionPos);
 
         if (section != null) {
             var pendingUpdate = ChunkUpdateType.SORT;
-            if (this.shouldPrioritizeTask(section)) {
+            if (allowImportantSorts() && this.shouldPrioritizeTask(section)) {
                 pendingUpdate = ChunkUpdateType.IMPORTANT_SORT;
             }
             pendingUpdate = ChunkUpdateType.getPromotionUpdateType(section.getPendingUpdate(), pendingUpdate);
@@ -559,6 +602,14 @@ public class RenderSectionManager {
 
     private static boolean allowImportantRebuilds() {
         return !SodiumClientMod.options().performance.alwaysDeferChunkUpdates;
+    }
+
+    private static boolean allowImportantSorts() {
+        return SodiumClientMod.options().performance.deferSortMode != DeferSortMode.ALWAYS;
+    }
+
+    private static boolean allowZeroFrameSortWait() {
+        return SodiumClientMod.options().performance.deferSortMode == DeferSortMode.DEFER_ZERO_FRAMES;
     }
 
     private float getEffectiveRenderDistance() {

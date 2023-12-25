@@ -9,10 +9,16 @@ import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.bsp_tre
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.bsp_tree.BSPResult;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.bsp_tree.TimingRecorder;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.bsp_tree.TimingRecorder.Counter;
-import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.trigger.TranslucentSorting;
+import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.trigger.SortTriggering;
 import me.jellysquid.mods.sodium.client.util.NativeBuffer;
 import net.minecraft.util.math.ChunkSectionPos;
 
+/**
+ * Constructs a BSP tree of the quads and sorts them dynamically.
+ * 
+ * Triggering is performed when the BSP tree's partition planes are crossed in
+ * any direction (bidirectional).
+ */
 public class BSPDynamicData extends DynamicData {
     // /tp ~ ~-100 ~
     public static final TimingRecorder sortInitialRecorder = new TimingRecorder("BSP sort initial");
@@ -78,7 +84,7 @@ public class BSPDynamicData extends DynamicData {
         dynamicData.sort(cameraPos);
         sortInitialRecorder.recordNow(quads.length, start);
 
-        if (TranslucentSorting.DEBUG_TRIGGER_STATS) {
+        if (SortTriggering.DEBUG_TRIGGER_STATS) {
             TimingRecorder.incrementBy(Counter.UNIQUE_TRIGGERS, result.getUniqueTriggers());
         }
         TimingRecorder.incrementBy(Counter.QUADS, quads.length);

@@ -10,12 +10,20 @@ import me.jellysquid.mods.sodium.client.gl.util.VertexRange;
 import me.jellysquid.mods.sodium.client.render.chunk.data.BuiltSectionMeshParts;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.TQuad;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.trigger.GeometryPlanes;
-import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.trigger.TranslucentSorting;
+import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.trigger.SortTriggering;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.bsp_tree.TimingRecorder;
 import me.jellysquid.mods.sodium.client.util.NativeBuffer;
 import net.minecraft.util.math.ChunkSectionPos;
 
 /**
+ * Performs dynamic topo sorting and falls back to distance sorting as
+ * necessary. This class implements a number of heuristics to attempt to upgrade
+ * distance-based sorting back to topo sorting when possible as topo sorting
+ * generally needs to happen far less often.
+ * 
+ * Triggering is performed when the quads' planes crossed along their normal
+ * direction (unidirectional).
+ * 
  * Implementation note:
  * - Reusing the output of previous distance sorting job doesn't make a
  * difference or makes things slower in some cases. It's unclear why exactly
@@ -27,8 +35,8 @@ public class TopoSortDynamicData extends DynamicData {
     public static final TimingRecorder distanceSortRecorder = new TimingRecorder("Distance sort");
 
     private final TQuad[] quads;
-    private boolean GFNITrigger = !TranslucentSorting.DEBUG_SKIP_TOPO_SORT;
-    private boolean directTrigger = TranslucentSorting.DEBUG_SKIP_TOPO_SORT;
+    private boolean GFNITrigger = !SortTriggering.DEBUG_SKIP_TOPO_SORT;
+    private boolean directTrigger = SortTriggering.DEBUG_SKIP_TOPO_SORT;
     private boolean turnGFNITriggerOff = false;
     private boolean turnDirectTriggerOn = false;
     private boolean turnDirectTriggerOff = false;
@@ -192,7 +200,7 @@ public class TopoSortDynamicData extends DynamicData {
         var data = new long[quads.length];
         for (int i = 0; i < quads.length; i++) {
             float distance = cameraPos.distanceSquared(quads[i].getCenter());
-            data[i] = (long) Float.floatToRawIntBits(distance) << 32 | i;
+            data[i] = (long) ~Float.floatToRawIntBits(distance) << 32 | i;
         }
 
         Arrays.sort(data);

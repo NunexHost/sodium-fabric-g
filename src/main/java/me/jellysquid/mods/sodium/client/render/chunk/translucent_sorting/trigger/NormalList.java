@@ -75,7 +75,7 @@ public class NormalList {
                         (double) this.normal.z * v.z()));
     }
 
-    void processMovement(TranslucentSorting ts, CameraMovement movement) {
+    void processMovement(SortTriggering ts, CameraMovement movement) {
         // calculate the distance range of the movement with respect to the normal
         double start = this.normalDotDouble(movement.lastCamera());
         double end = this.normalDotDouble(movement.currentCamera());
@@ -153,7 +153,7 @@ public class NormalList {
         Group group = this.groupsBySection.get(sectionPos);
 
         // only update on changes to translucent geometry
-        if (group.equalsNOrmalPlanes(normalPlanes)) {
+        if (group.normalPlanesEquals(normalPlanes)) {
             // don't update if they are the same
             return;
         }

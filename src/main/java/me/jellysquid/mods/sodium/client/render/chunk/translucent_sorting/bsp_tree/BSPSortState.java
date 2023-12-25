@@ -4,11 +4,16 @@ import java.nio.IntBuffer;
 
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.ints.IntConsumer;
-import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.trigger.TranslucentSorting;
+import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.trigger.SortTriggering;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.bsp_tree.TimingRecorder.Counter;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.data.TranslucentData;
 import me.jellysquid.mods.sodium.client.util.NativeBuffer;
 
+/**
+ * The sort state is passed around the tree (similar to visitor pattern) and
+ * contains the index buffer being written to alongside additional state for
+ * remapping indexes when traversing the subtree of a reused node.
+ */
 class BSPSortState {
     static final int NO_FIXED_OFFSET = Integer.MIN_VALUE;
 
@@ -99,14 +104,14 @@ class BSPSortState {
      * 6x5b, 8x4b, 10x3b, 16x2b, 32x1b
      */
     static int[] compressIndexes(IntArrayList indexes, boolean doSort) {
-        if (TranslucentSorting.DEBUG_COMPRESSION_STATS) {
+        if (SortTriggering.DEBUG_COMPRESSION_STATS) {
             Counter.COMPRESSION_CANDIDATES.increment();
             TimingRecorder.incrementBy(Counter.UNCOMPRESSED_SIZE, indexes.size());
         }
 
         // bail on short lists
         if (indexes.size() < INDEX_COMPRESSION_MIN_LENGTH || indexes.size() > 1 << 10) {
-            if (TranslucentSorting.DEBUG_COMPRESSION_STATS) {
+            if (SortTriggering.DEBUG_COMPRESSION_STATS) {
                 TimingRecorder.incrementBy(Counter.COMPRESSED_SIZE, indexes.size());
             }
             return indexes.toIntArray();
@@ -141,7 +146,7 @@ class BSPSortState {
         // stop if the first index is too large
         int firstIndex = workingList.getInt(0);
         if (firstIndex > 1 << 17) {
-            if (TranslucentSorting.DEBUG_COMPRESSION_STATS) {
+            if (SortTriggering.DEBUG_COMPRESSION_STATS) {
                 TimingRecorder.incrementBy(Counter.COMPRESSED_SIZE, indexes.size());
             }
             return indexes.toIntArray();
@@ -158,7 +163,7 @@ class BSPSortState {
             compressed[0] = 1 << 31 | CONSTANT_DELTA_WIDTH_INDEX << 27 | deltaCount << 17 | firstIndex;
             compressed[1] = minDelta;
 
-            if (TranslucentSorting.DEBUG_COMPRESSION_STATS) {
+            if (SortTriggering.DEBUG_COMPRESSION_STATS) {
                 Counter.COMPRESSION_SUCCESS.increment();
                 Counter.COMPRESSED_SIZE.incrementBy(2);
             }
@@ -167,7 +172,7 @@ class BSPSortState {
 
         // stop if the width is too large (and compression would make no sense)
         if (deltaRangeWidth > 16) {
-            if (TranslucentSorting.DEBUG_COMPRESSION_STATS) {
+            if (SortTriggering.DEBUG_COMPRESSION_STATS) {
                 TimingRecorder.incrementBy(Counter.COMPRESSED_SIZE, indexes.size());
             }
             return indexes.toIntArray();
@@ -210,7 +215,7 @@ class BSPSortState {
             compressed[outputIndex++] = gatherInt;
         }
 
-        if (TranslucentSorting.DEBUG_COMPRESSION_STATS) {
+        if (SortTriggering.DEBUG_COMPRESSION_STATS) {
             Counter.COMPRESSION_SUCCESS.increment();
             TimingRecorder.incrementBy(Counter.COMPRESSED_SIZE, size);
         }

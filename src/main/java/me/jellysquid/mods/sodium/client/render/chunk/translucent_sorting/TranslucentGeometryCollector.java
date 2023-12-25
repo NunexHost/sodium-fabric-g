@@ -2,6 +2,8 @@ package me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting;
 
 import java.util.Arrays;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.joml.Vector3f;
 import org.joml.Vector3fc;
 
@@ -9,12 +11,14 @@ import it.unimi.dsi.fastutil.objects.ReferenceArrayList;
 import me.jellysquid.mods.sodium.client.SodiumClientMod;
 import me.jellysquid.mods.sodium.client.gui.SodiumGameOptions.SortBehavior;
 import me.jellysquid.mods.sodium.client.model.quad.properties.ModelQuadFacing;
+import me.jellysquid.mods.sodium.client.render.chunk.compile.ChunkBuildOutput;
 import me.jellysquid.mods.sodium.client.render.chunk.compile.pipeline.FluidRenderer;
 import me.jellysquid.mods.sodium.client.render.chunk.data.BuiltSectionMeshParts;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.bsp_tree.BSPBuildFailureException;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.bsp_tree.TimingRecorder.Counter;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.data.AnyOrderData;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.data.BSPDynamicData;
+import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.data.DynamicData;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.data.NoData;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.data.PresentTranslucentData;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.data.StaticNormalRelativeData;
@@ -22,7 +26,7 @@ import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.data.St
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.data.TopoSortDynamicData;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.data.TranslucentData;
 import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.trigger.GeometryPlanes;
-import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.trigger.TranslucentSorting;
+import me.jellysquid.mods.sodium.client.render.chunk.translucent_sorting.trigger.SortTriggering;
 import me.jellysquid.mods.sodium.client.render.chunk.vertex.format.ChunkVertexEncoder;
 import me.jellysquid.mods.sodium.client.util.NativeBuffer;
 import net.caffeinemc.mods.sodium.api.util.NormI8;
@@ -34,16 +38,30 @@ import net.minecraft.util.math.ChunkSectionPos;
  * determines the best sort type for the section and constructs various types of
  * translucent data objects that then perform sorting and get registered with
  * GFNI for triggering.
- *
- * TODO:
- * - use continuous arrays for the quad centers and quad storage if necessary
- * - use more accurate normals for unaligned topo sort?
- * - optionally add a way to attempt full acyclic topo sort even if the
- * heuristic doesn't expect it to be possible. The caveat is that this costs
- * doing it once without invisible quad exclusion and once with if the first
- * attempt fails.
+ * 
+ * An instance of this class is created for each meshing task. It goes through
+ * three stages:
+ * 1. During meshing it collects the geometry and calculates some metrics on the
+ * fly. These are later used for the sort type heuristic.
+ * 2. With {@link #finishRendering()} it finishes the geometry collection,
+ * generates the quad list, and calculates additional metrics. Then the sort
+ * type is determined with a heuristic based on the collected metrics. This
+ * determines if block face culling can be enabled.
+ * - Now the {@link BuiltSectionMeshParts} is generates which yields the vertex
+ * ranges.
+ * 3. The vertex ranges and the mesh parts object are used by the collector in
+ * the construction of the {@link TranslucentData} object. The data object
+ * allocates memory for the index data and performs the first (and for static
+ * sort types, only) sort.
+ * - The data object is put into the {@link ChunkBuildOutput}.
+ * 
+ * When dynamic sorting is enabled, trigger information from {@link DynamicData}
+ * object is integrated into {@link SortTriggering} when the task result is
+ * received by the main thread.
  */
 public class TranslucentGeometryCollector {
+    private static final Logger LOGGER = LogManager.getLogger(TranslucentGeometryCollector.class);
+
     private final ChunkSectionPos sectionPos;
 
     // true if there are any unaligned quads
@@ -248,10 +266,10 @@ public class TranslucentGeometryCollector {
             case OFF:
                 return SortType.NONE;
             case STATIC:
-                if (sortType == SortType.NONE) {
+                if (sortType == SortType.STATIC_NORMAL_RELATIVE || sortType == SortType.STATIC_TOPO) {
                     return sortType;
                 } else {
-                    return SortType.STATIC_NORMAL_RELATIVE;
+                    return SortType.NONE;
                 }
             case DYNAMIC:
                 return sortType;
@@ -406,10 +424,10 @@ public class TranslucentGeometryCollector {
 
         var attemptLimitIndex = Math.max(Math.min(normalCount, STATIC_TOPO_SORT_ATTEMPT_LIMITS.length - 1), 2);
         if (this.quads.length <= STATIC_TOPO_SORT_ATTEMPT_LIMITS[attemptLimitIndex]) {
-            return SortType.STATIC_TOPO_ACYCLIC;
+            return SortType.STATIC_TOPO;
         }
 
-        return SortType.DYNAMIC_ALL;
+        return SortType.DYNAMIC;
     }
 
     public SortType finishRendering() {
@@ -422,10 +440,14 @@ public class TranslucentGeometryCollector {
         }
         this.quads = new TQuad[totalQuadCount];
         int quadIndex = 0;
-        for (var quadList : this.quadLists) {
+        for (int direction = 0; direction < ModelQuadFacing.COUNT; direction++) {
+            var quadList = this.quadLists[direction];
             if (quadList != null) {
                 for (var quad : quadList) {
                     this.quads[quadIndex++] = quad;
+                }
+                if (direction < ModelQuadFacing.DIRECTIONS) {
+                    this.alignedFacingBitmap |= 1 << direction;
                 }
             }
         }
@@ -449,12 +471,12 @@ public class TranslucentGeometryCollector {
         // from this point on we know the estimated sort type requires direction mixing
         // (no backface culling) and all vertices are in the UNASSIGNED direction.
         NativeBuffer buffer = PresentTranslucentData.nativeBufferForQuads(this.quads);
-        if (this.sortType == SortType.STATIC_TOPO_ACYCLIC) {
+        if (this.sortType == SortType.STATIC_TOPO) {
             var result = StaticTopoAcyclicData.fromMesh(translucentMesh, this.quads, this.sectionPos, buffer);
             if (result != null) {
                 return result;
             }
-            this.sortType = SortType.DYNAMIC_ALL;
+            this.sortType = SortType.DYNAMIC;
         }
 
         // filter the sort type with the user setting and re-evaluate
@@ -464,15 +486,17 @@ public class TranslucentGeometryCollector {
             return AnyOrderData.fromMesh(translucentMesh, this.quads, this.sectionPos, buffer);
         }
 
-        if (this.sortType == SortType.DYNAMIC_ALL) {
-            if (!TranslucentSorting.DEBUG_ONLY_TOPO_OR_DISTANCE_SORT) {
+        if (this.sortType == SortType.DYNAMIC) {
+            if (!SortTriggering.DEBUG_ONLY_TOPO_OR_DISTANCE_SORT) {
                 try {
                     return BSPDynamicData.fromMesh(
                         translucentMesh, cameraPos, this.quads, this.sectionPos,
                         buffer, oldData);
                 } catch (BSPBuildFailureException e) {
                     // TODO: investigate existing BSP build failures, then remove this logging
-                    System.out.println("BSP build failure: " + sectionPos);
+                    LOGGER.warn(
+                        "BSP build failure at {}. Please report this to douira for evaluation alongside with some way of reproducing the geometry in this section. (coordinates and world file or seed)",
+                        sectionPos);
                     var geometryPlanes = GeometryPlanes.fromQuadLists(sectionPos, this.quads);
                     return TopoSortDynamicData.fromMesh(
                         translucentMesh, cameraPos, this.quads, this.sectionPos,
