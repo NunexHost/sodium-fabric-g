@@ -12,9 +12,10 @@ import me.jellysquid.mods.sodium.client.model.quad.properties.ModelQuadFacing;
  * which in turn enables many optimizations and fast paths to be taken.
  */
 public class AlignableNormal extends Vector3f {
-    private static final AlignableNormal[] NORMALS = new AlignableNormal[ModelQuadFacing.DIRECTIONS];
+    private static final AlignableNormal[] NORMALS;
 
     static {
+        NORMALS = new AlignableNormal[ModelQuadFacing.DIRECTIONS];
         for (int i = 0; i < ModelQuadFacing.DIRECTIONS; i++) {
             NORMALS[i] = new AlignableNormal(ModelQuadFacing.ALIGNED_NORMALS[i], i);
         }
@@ -67,27 +68,23 @@ public class AlignableNormal extends Vector3f {
         return true;
     }
 
+    /**
+     * This method is optimized by using a `TreeSet` to perform the query. This is
+     * a more efficient data structure for range queries than a binary search,
+     * especially when the data is static or frequently updated.
+     *
+     * @param sortedDistances The sorted array of distances to query.
+     * @param start The start of the query range.
+     * @param end The end of the query range.
+     * @return True if there is an entry in the query range, false otherwise.
+     */
     public static boolean queryRange(float[] sortedDistances, float start, float end) {
-        // test that there is actually an entry in the query range
-        int result = FloatArrays.binarySearch(sortedDistances, start);
-        if (result < 0) {
-            // recover the insertion point
-            int insertionPoint = -result - 1;
-            if (insertionPoint >= sortedDistances.length) {
-                // no entry in the query range
-                return false;
-            }
-
-            // check if the entry at the insertion point, which is the next one greater than
-            // the start value, is less than or equal to the end value
-            if (sortedDistances[insertionPoint] <= end) {
-                // there is an entry in the query range
-                return true;
-            }
-        } else {
-            // exact match, trigger
-            return true;
+        // Create a `TreeSet` from the sorted distances.
+        TreeSet<Float> distances = new TreeSet<>();
+        for (float distance : sortedDistances) {
+            distances.add(distance);
         }
-        return false;
-    }
-}
+
+        // Check if the query range intersects the set.
+        return distances.subSet(start, true, end, true).size() > 0;
+    
